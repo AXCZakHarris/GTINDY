@@ -24,11 +24,13 @@ LINES_PER_PAGE = 9
 UNIT_TYPE_LABEL = "15 min"
 UNITS_PER_HOUR = 4  # 15-minute units
 
-# Per-client billing overrides, keyed by the lowercased/trimmed CSV "Client"
-# value. When a client matches, the invoice bills in the configured unit type
-# at the fixed hourly rate instead of the global 15-min default, and the line
-# amount is recomputed as hours * hourly_rate so rate * units reconciles.
-# This lets us correct a client's billing without editing the source CSV.
+# Per-client billing overrides, keyed by a normalized client name (lowercased,
+# whitespace-collapsed, and with "Last, First" reordered to "first last").
+# Match the CSV "Client" value regardless of name order. When a client matches,
+# the invoice bills in the configured unit type at the fixed hourly rate instead
+# of the global 15-min default, and the line amount is recomputed as
+# hours * hourly_rate so rate * units reconciles. This lets us correct a
+# client's billing without editing the source CSV.
 CLIENT_OVERRIDES: dict[str, dict] = {
     "mary keuler": {
         "units_per_hour": 1,  # 1 unit = 1 hour (no 15-min split)
@@ -38,8 +40,22 @@ CLIENT_OVERRIDES: dict[str, dict] = {
 }
 
 
+def _normalize_client_name(client: str) -> str:
+    """Normalize a client name for override matching.
+
+    Lowercase, collapse whitespace, and reorder a single "Last, First" comma
+    form to "first last" so "Keuler, Mary" and "Mary Keuler" both match.
+    """
+    name = " ".join((client or "").split()).lower()
+    if name.count(",") == 1:
+        last, first = (part.strip() for part in name.split(","))
+        if last and first:
+            name = f"{first} {last}"
+    return name
+
+
 def _client_override(client: str) -> dict | None:
-    return CLIENT_OVERRIDES.get((client or "").strip().lower())
+    return CLIENT_OVERRIDES.get(_normalize_client_name(client))
 
 
 @dataclass

@@ -18,8 +18,9 @@ filled IRIS Provider Invoice PDFs.
 
 Some clients must be billed differently than the source CSV reports, **without
 editing the CSV**. `CLIENT_OVERRIDES` in `invoice_generator.py` maps a client
-name (matched case-insensitively against the CSV `Client` column) to a billing
-override. When a client matches, the invoice uses the override's unit type and
+name (matched case-insensitively against the CSV `Client` column, with
+`Last, First` reordered so `Keuler, Mary` and `Mary Keuler` both match) to a
+billing override. When a client matches, the invoice uses the override's unit type and
 fixed hourly rate instead of the global 15-min default, and the line **amount is
 recomputed** as `billable_hours × hourly_rate` so `rate × units` reconciles.
 
