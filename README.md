@@ -14,6 +14,20 @@ filled IRIS Provider Invoice PDFs.
 - `Unit Type` is reported as `15 min`. Units are computed as
   `billable_hours × 4`, and `Unit Rate` is `csv_rate / 4` (e.g. $36/hr → $9.00).
 
+### Per-client billing overrides
+
+Some clients must be billed differently than the source CSV reports, **without
+editing the CSV**. `CLIENT_OVERRIDES` in `invoice_generator.py` maps a client
+name (matched case-insensitively against the CSV `Client` column) to a billing
+override. When a client matches, the invoice uses the override's unit type and
+fixed hourly rate instead of the global 15-min default, and the line **amount is
+recomputed** as `billable_hours × hourly_rate` so `rate × units` reconciles.
+
+Current overrides:
+
+- **Mary Keuler** — billed in `1 hr` units at **$35.00/hr** (units = hours,
+  unit rate = $35.00, amount = hours × $35).
+
 ## Run locally
 
     pip install -r requirements.txt

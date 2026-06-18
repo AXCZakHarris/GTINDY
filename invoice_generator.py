@@ -24,6 +24,23 @@ LINES_PER_PAGE = 9
 UNIT_TYPE_LABEL = "15 min"
 UNITS_PER_HOUR = 4  # 15-minute units
 
+# Per-client billing overrides, keyed by the lowercased/trimmed CSV "Client"
+# value. When a client matches, the invoice bills in the configured unit type
+# at the fixed hourly rate instead of the global 15-min default, and the line
+# amount is recomputed as hours * hourly_rate so rate * units reconciles.
+# This lets us correct a client's billing without editing the source CSV.
+CLIENT_OVERRIDES: dict[str, dict] = {
+    "mary keuler": {
+        "units_per_hour": 1,  # 1 unit = 1 hour (no 15-min split)
+        "unit_type_label": "1 hr",
+        "hourly_rate": 35.0,
+    },
+}
+
+
+def _client_override(client: str) -> dict | None:
+    return CLIENT_OVERRIDES.get((client or "").strip().lower())
+
 
 @dataclass
 class ServiceLine:
@@ -133,19 +150,34 @@ def _fmt_units(value: float) -> str:
 
 def _build_field_values(lines: list[ServiceLine], participant: str) -> dict[str, str]:
     values: dict[str, str] = {"participant_name": participant}
+    override = _client_override(participant)
+    units_per_hour = override["units_per_hour"] if override else UNITS_PER_HOUR
+    unit_type = override["unit_type_label"] if override else UNIT_TYPE_LABEL
+
     total_units = 0
     total_amount = 0.0
     for i, line in enumerate(lines, start=1):
         prefix = f"row{i}_"
+        if override:
+            hourly_rate = override["hourly_rate"]
+            # Keep units fractional (e.g. 2.5 hr → 2.5 units) so rate * units
+            # reconciles with amount; only the 15-min default is whole units.
+            units = line.hours * units_per_hour
+            unit_rate = hourly_rate / units_per_hour
+            amount = line.hours * hourly_rate
+        else:
+            units = line.units
+            unit_rate = line.unit_rate
+            amount = line.amount
         values[prefix + "date"] = line.visit_date.strftime("%m/%d/%y")
         values[prefix + "code"] = line.procedure_code
         values[prefix + "modifier"] = line.modifier
-        values[prefix + "units"] = _fmt_units(line.units)
-        values[prefix + "rate"] = _fmt_money(line.unit_rate)
-        values[prefix + "unittype"] = UNIT_TYPE_LABEL
-        values[prefix + "amount"] = _fmt_money(line.amount)
-        total_units += line.units
-        total_amount += line.amount
+        values[prefix + "units"] = _fmt_units(units)
+        values[prefix + "rate"] = _fmt_money(unit_rate)
+        values[prefix + "unittype"] = unit_type
+        values[prefix + "amount"] = _fmt_money(amount)
+        total_units += units
+        total_amount += amount
     values["total_units"] = _fmt_units(total_units)
     values["total_amount"] = _fmt_money(total_amount)
     return values
