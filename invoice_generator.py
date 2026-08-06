@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import BooleanObject, NameObject, NumberObject
+from pypdf.generic import BooleanObject, NameObject, NumberObject, TextStringObject
 
 LINES_PER_PAGE = 9
 UNIT_TYPE_LABEL = "15 min"
@@ -112,20 +112,108 @@ def parse_csv(csv_text: str) -> dict[tuple[str, int, int], list[ServiceLine]]:
     return grouped
 
 
-def _chunk(lines: list[ServiceLine], size: int) -> list[list[ServiceLine]]:
+MEDICAID_ID_COLUMNS = (
+    "Medicaid ID",
+    "Medicaid Id",
+    "Medicaid Number",
+    "Client Medicaid ID",
+    "Member ID",
+    "Member Id",
+    "Insurance ID",
+    "Policy Number",
+    "Policy #",
+)
+
+DOB_COLUMNS = (
+    "DOB",
+    "Date of Birth",
+    "Client DOB",
+    "Birth Date",
+    "Birthdate",
+)
+
+
+@dataclass
+class ClientDetails:
+    """Optional per-participant identifiers, when the CSV happens to carry them."""
+
+    medicaid_id: str = ""
+    dob: datetime | None = None
+
+
+def _first_column(row: dict[str, str], names: tuple[str, ...]) -> str:
+    for name in names:
+        value = row.get(name)
+        if value and value.strip():
+            return value.strip()
+    return ""
+
+
+def _parse_optional_date(text: str) -> datetime | None:
+    for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d", "%m-%d-%Y"):
+        try:
+            return datetime.strptime(text.strip(), fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def parse_client_details(csv_text: str) -> dict[str, ClientDetails]:
+    """Pull participant Medicaid ID / DOB out of the CSV when those columns exist.
+
+    AxisCare export column sets vary; every field here is best-effort and is left
+    blank on the generated form when the column is absent.
+    """
+    reader = csv.DictReader(io.StringIO(csv_text))
+    details: dict[str, ClientDetails] = {}
+    for row in reader:
+        client = (row.get("Client") or "").strip()
+        if not client:
+            continue
+        current = details.setdefault(client, ClientDetails())
+        if not current.medicaid_id:
+            current.medicaid_id = _first_column(row, MEDICAID_ID_COLUMNS)
+        if current.dob is None:
+            raw_dob = _first_column(row, DOB_COLUMNS)
+            if raw_dob:
+                current.dob = _parse_optional_date(raw_dob)
+    return details
+
+
+def split_participant_name(name: str) -> tuple[str, str, str]:
+    """Split an AxisCare client name into (first, middle, last).
+
+    Handles both "Last, First M" and "First M Last" orderings.
+    """
+    name = " ".join(name.split())
+    if not name:
+        return "", "", ""
+    if "," in name:
+        last, _, rest = name.partition(",")
+        parts = rest.split()
+        first = parts[0] if parts else ""
+        middle = " ".join(parts[1:])
+        return first, middle, last.strip()
+    parts = name.split()
+    if len(parts) == 1:
+        return "", "", parts[0]
+    return parts[0], " ".join(parts[1:-1]), parts[-1]
+
+
+def chunk_lines(lines: list[ServiceLine], size: int) -> list[list[ServiceLine]]:
     return [lines[i : i + size] for i in range(0, len(lines), size)]
 
 
-def _safe_filename(name: str) -> str:
+def safe_filename(name: str) -> str:
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_")
     return name or "invoice"
 
 
-def _fmt_money(value: float) -> str:
+def fmt_money(value: float) -> str:
     return f"${value:,.2f}"
 
 
-def _fmt_units(value: float) -> str:
+def fmt_units(value: float) -> str:
     if value == int(value):
         return str(int(value))
     return f"{value:g}"
@@ -140,18 +228,35 @@ def _build_field_values(lines: list[ServiceLine], participant: str) -> dict[str,
         values[prefix + "date"] = line.visit_date.strftime("%m/%d/%y")
         values[prefix + "code"] = line.procedure_code
         values[prefix + "modifier"] = line.modifier
-        values[prefix + "units"] = _fmt_units(line.units)
-        values[prefix + "rate"] = _fmt_money(line.unit_rate)
+        values[prefix + "units"] = fmt_units(line.units)
+        values[prefix + "rate"] = fmt_money(line.unit_rate)
         values[prefix + "unittype"] = UNIT_TYPE_LABEL
-        values[prefix + "amount"] = _fmt_money(line.amount)
+        values[prefix + "amount"] = fmt_money(line.amount)
         total_units += line.units
         total_amount += line.amount
-    values["total_units"] = _fmt_units(total_units)
-    values["total_amount"] = _fmt_money(total_amount)
+    values["total_units"] = fmt_units(total_units)
+    values["total_amount"] = fmt_money(total_amount)
     return values
 
 
-def _fill_pdf(template_path: Path, field_values: dict[str, str]) -> bytes:
+def _set_field_font_sizes(writer: PdfWriter, sizes: dict[str, float]) -> None:
+    """Shrink the default appearance font for narrow fields so text is not clipped."""
+    for page in writer.pages:
+        for annot in page.get("/Annots") or []:
+            obj = annot.get_object()
+            name = obj.get("/T")
+            if name is None and "/Parent" in obj:
+                obj = obj["/Parent"].get_object()
+                name = obj.get("/T")
+            if name in sizes:
+                obj[NameObject("/DA")] = TextStringObject(f"/Helv {sizes[name]:g} Tf 0 g")
+
+
+def fill_pdf(
+    template_path: Path,
+    field_values: dict[str, str],
+    font_sizes: dict[str, float] | None = None,
+) -> bytes:
     reader = PdfReader(str(template_path))
     writer = PdfWriter(clone_from=reader)
 
@@ -160,6 +265,9 @@ def _fill_pdf(template_path: Path, field_values: dict[str, str]) -> bytes:
         writer._root_object[NameObject("/AcroForm")] = writer._add_object({})
     acro = writer._root_object["/AcroForm"]
     acro[NameObject("/NeedAppearances")] = BooleanObject(True)
+
+    if font_sizes:
+        _set_field_font_sizes(writer, font_sizes)
 
     for page in writer.pages:
         writer.update_page_form_field_values(page, field_values)
@@ -184,12 +292,12 @@ def generate_invoices(csv_text: str, template_path: Path) -> list[GeneratedInvoi
     grouped = parse_csv(csv_text)
     results: list[GeneratedInvoice] = []
     for (client, year, month), lines in sorted(grouped.items()):
-        chunks = _chunk(lines, LINES_PER_PAGE)
+        chunks = chunk_lines(lines, LINES_PER_PAGE)
         total_pages = len(chunks)
         for idx, chunk in enumerate(chunks, start=1):
             field_values = _build_field_values(chunk, client)
-            pdf_bytes = _fill_pdf(template_path, field_values)
-            base = f"{_safe_filename(client)}_{year:04d}-{month:02d}"
+            pdf_bytes = fill_pdf(template_path, field_values)
+            base = f"{safe_filename(client)}_{year:04d}-{month:02d}"
             suffix = f"_pt{idx}" if total_pages > 1 else ""
             results.append(
                 GeneratedInvoice(

@@ -24,15 +24,24 @@ import io
 import os
 import secrets
 import zipfile
+from dataclasses import replace
+from datetime import date
 from pathlib import Path
 
 import streamlit as st
 
+import ilife_claim
 from invoice_generator import generate_invoices
 
 BASE_DIR = Path(__file__).parent
 TEMPLATE_PDF = BASE_DIR / "template.pdf"
+ILIFE_TEMPLATE_PDF = BASE_DIR / "ilife_template.pdf"
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
+
+FORM_IRIS_INVOICE = "IRIS Provider Invoice"
+FORM_ILIFE_CLAIM = "iLIFE IRIS Vendor Claim Form"
+FORM_BOTH = "Both"
+FORM_CHOICES = (FORM_IRIS_INVOICE, FORM_ILIFE_CLAIM, FORM_BOTH)
 
 
 def _expected_password() -> str | None:
@@ -52,7 +61,7 @@ def _check_password() -> bool:
     if st.session_state.get("authed"):
         return True
 
-    st.title("AxisCare → IRIS Provider Invoice")
+    st.title("AxisCare → IRIS billing forms")
     st.write("Enter the access password to continue.")
     entered = st.text_input("Password", type="password", key="pw_input")
     if st.button("Sign in"):
@@ -64,26 +73,105 @@ def _check_password() -> bool:
     return False
 
 
+def _ilife_options() -> ilife_claim.ClaimOptions:
+    """Collect the iLIFE fields that the AxisCare CSV cannot supply."""
+    default = ilife_claim.SYNERGY_MADISON
+    with st.expander("iLIFE claim details", expanded=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            provider_name = st.text_input("Provider name", value=default.name)
+            provider_id = st.text_input(
+                "Provider ID (SSN or EIN)",
+                value=default.provider_id,
+                help="Include at least one of Provider ID / Vendor ID / Medicaid ID.",
+            )
+            vendor_id = st.text_input(
+                "Vendor ID", value=default.vendor_id, help="iLIFE-assigned ID number."
+            )
+            medicaid_id = st.text_input(
+                "Medicaid ID",
+                value=default.medicaid_id,
+                help="ForwardHealth-assigned provider number.",
+            )
+            contact_person = st.text_input(
+                "Provider contact person", value=default.contact_person
+            )
+        with col2:
+            phone = st.text_input("Phone", value=default.phone)
+            street = st.text_input("Address (street)", value=default.address_street)
+            city_state_zip = st.text_input(
+                "Address (city, state, ZIP)", value=default.address_city_state_zip
+            )
+            invoice_number = st.text_input("Invoice number", value="")
+            description = st.text_input(
+                "Service description", value="Supportive Home Care"
+            )
+
+        col3, col4 = st.columns(2)
+        with col3:
+            unit_basis = st.radio(
+                "Unit basis",
+                (ilife_claim.UNIT_BASIS_15MIN, ilife_claim.UNIT_BASIS_HOUR),
+                horizontal=True,
+                help="15 min matches the IRIS Provider Invoice (rate ÷ 4). HR bills "
+                "hours at the CSV hourly rate.",
+            )
+        with col4:
+            include_invoice_date = st.checkbox("Set invoice date", value=True)
+            invoice_date = (
+                st.date_input("Invoice date", value=date.today())
+                if include_invoice_date
+                else None
+            )
+
+    provider = replace(
+        default,
+        name=provider_name,
+        address_street=street,
+        address_city_state_zip=city_state_zip,
+        contact_person=contact_person,
+        phone=phone,
+        provider_id=provider_id,
+        vendor_id=vendor_id,
+        medicaid_id=medicaid_id,
+    )
+    return ilife_claim.ClaimOptions(
+        service_description=description,
+        unit_basis=unit_basis,
+        invoice_number=invoice_number,
+        invoice_date=invoice_date,
+        provider=provider,
+    )
+
+
 def _render_app() -> None:
     st.set_page_config(
-        page_title="AxisCare → IRIS Provider Invoice",
+        page_title="AxisCare → IRIS billing forms",
         page_icon=None,
         layout="centered",
     )
 
-    st.title("AxisCare → IRIS Provider Invoice")
+    st.title("AxisCare → IRIS billing forms")
     st.write(
-        "Upload an AxisCare **ClaimBatchCreation** CSV. You'll get back one IRIS "
-        "Provider Invoice PDF per participant per service month."
+        "Upload an AxisCare **ClaimBatchCreation** CSV. You'll get back one filled "
+        "PDF per participant per service month, on the form you pick below."
+    )
+
+    form_choice = st.radio("Form", FORM_CHOICES, horizontal=True)
+    claim_options = (
+        _ilife_options() if form_choice in (FORM_ILIFE_CLAIM, FORM_BOTH) else None
     )
 
     with st.expander("Rules", expanded=False):
         st.markdown(
-            "- One invoice per participant per calendar month.\n"
+            "- One form per participant per calendar month.\n"
             "- Same-day visits for a participant are merged into a single line.\n"
-            "- Up to 9 service dates per page; longer months overflow into "
+            "- Service dates per page: **9** on the IRIS Provider Invoice, **14** on "
+            "the iLIFE Vendor Claim Form. Longer months overflow into "
             "`_pt2`, `_pt3`, …\n"
-            "- Units are reported in 15-minute increments at the equivalent unit rate."
+            "- Units default to 15-minute increments at the equivalent unit rate.\n"
+            "- On the iLIFE form, signature lines and any ID the CSV doesn't carry "
+            "are left blank for hand-completion."
         )
 
     st.warning(
@@ -118,7 +206,13 @@ def _render_app() -> None:
         return
 
     try:
-        invoices = generate_invoices(csv_text, TEMPLATE_PDF)
+        invoices = []
+        if form_choice in (FORM_IRIS_INVOICE, FORM_BOTH):
+            invoices += generate_invoices(csv_text, TEMPLATE_PDF)
+        if form_choice in (FORM_ILIFE_CLAIM, FORM_BOTH):
+            invoices += ilife_claim.generate_claims(
+                csv_text, ILIFE_TEMPLATE_PDF, claim_options
+            )
     except Exception:
         st.error("Could not process CSV. Check the file format and try again.")
         return
@@ -134,11 +228,11 @@ def _render_app() -> None:
 
     if len(invoices) == 1:
         only = invoices[0]
-        st.success("Generated 1 invoice.")
+        st.success("Generated 1 form.")
         st.download_button(
             label="Download PDF",
             data=only.pdf_bytes,
-            file_name=f"iris_invoice_{token}.pdf",
+            file_name=f"iris_form_{token}.pdf",
             mime="application/pdf",
         )
         return
@@ -148,11 +242,11 @@ def _render_app() -> None:
         for inv in invoices:
             zf.writestr(inv.filename, inv.pdf_bytes)
 
-    st.success(f"Generated {len(invoices)} invoices.")
+    st.success(f"Generated {len(invoices)} forms.")
     st.download_button(
         label="Download ZIP",
         data=buf.getvalue(),
-        file_name=f"iris_invoices_{token}.zip",
+        file_name=f"iris_forms_{token}.zip",
         mime="application/zip",
     )
 

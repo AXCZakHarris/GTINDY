@@ -1,18 +1,63 @@
-# AxisCare → IRIS Provider Invoice Converter
+# AxisCare → IRIS Billing Form Converter
 
 Streamlit app. Upload an AxisCare `ClaimBatchCreation` CSV; download a ZIP of
-filled IRIS Provider Invoice PDFs.
+filled IRIS billing PDFs.
+
+## Supported forms
+
+| Form | Template | Lines per page |
+| --- | --- | --- |
+| IRIS Provider Invoice | `template.pdf` | 9 |
+| [iLIFE IRIS Vendor Claim Form](https://ilife.org/wp-content/uploads/IRIS_Vendor_Claim_Form-with-Vendor-ID-fillable.pdf) (rev. 3/2026) | `ilife_template.pdf` | 14 |
+
+Pick one or **Both** in the UI. With *Both*, each participant-month is emitted
+on both forms; iLIFE filenames are prefixed `ilife_`.
 
 ## Behavior
 
-- One invoice per **participant per calendar month** (grouped by `Visit Date`).
+- One form per **participant per calendar month** (grouped by `Visit Date`).
 - Multiple CSV rows for the same participant on the same date are **merged** into
   a single line (billable hours and amounts summed).
-- The template has **9 service lines per page**. If a (participant, month) group
-  has more than 9 distinct service dates, the invoice is split into
-  `..._pt1.pdf`, `..._pt2.pdf`, …; each part is one printable page.
+- If a (participant, month) group has more distinct service dates than the form
+  has lines, it is split into `..._pt1.pdf`, `..._pt2.pdf`, …; each part is one
+  printable page and carries its own billing date range and page total.
 - `Unit Type` is reported as `15 min`. Units are computed as
   `billable_hours × 4`, and `Unit Rate` is `csv_rate / 4` (e.g. $36/hr → $9.00).
+  The iLIFE form can be switched to bill in `HR` (hours at the CSV hourly rate).
+
+## iLIFE Vendor Claim Form specifics
+
+Provider details default to **Synergy HomeCare of Madison** (the same details
+baked into `template.pdf`), defined as `SYNERGY_MADISON` in `ilife_claim.py` and
+editable per run in the UI:
+
+    Provider Name        Synergy HomeCare of Madison
+    Address              6320 Monona Dr. Ste 215, Madison, WI 53716
+    Contact / Phone      Russell Bercier / 608-400-2941
+    *Provider ID (EIN)   99-3982407
+
+The form asks for at least one of Provider ID (SSN/EIN), **Vendor ID**
+(iLIFE-assigned), or **Medicaid ID** (ForwardHealth-assigned). Only the EIN is
+known from the existing data — enter the Vendor ID and/or Medicaid ID in the UI
+if iLIFE has issued them.
+
+Field sourcing:
+
+- **Participant first / middle / last** — split from the CSV `Client` column
+  (handles both `Last, First M` and `First M Last`).
+- **Participant Medicaid ID and DOB** — read from the CSV only if it carries a
+  matching column (`Medicaid ID`, `Member ID`, `Insurance ID`, `DOB`, …; see
+  `MEDICAID_ID_COLUMNS` / `DOB_COLUMNS`). Left blank otherwise.
+- **Billing Start/End Date** — first and last service date on that page.
+- **Service rows** — one row per service date, From = To = that date;
+  `Description` is a per-run value (default `Supportive Home Care`).
+- **Signature lines and Invoice Number** — left blank for hand-completion
+  (Invoice Number can be set in the UI).
+
+Verify a generated claim against the
+[form instructions](https://ilife.org/forms/iris-forms/) before the first
+submission; submit via <https://ecm.mcfi.net/Forms/vendorclaims>, email
+IRIS.Claims@iLIFE.org, or fax 1-414-918-8213.
 
 ## Run locally
 
@@ -113,5 +158,9 @@ turnkey HIPAA solution.
 ## Files
 
 - `app.py` — Streamlit UI
-- `invoice_generator.py` — CSV parsing, grouping, PDF fill (no UI deps)
+- `invoice_generator.py` — CSV parsing, grouping, PDF fill, IRIS Provider Invoice
+  field mapping (no UI deps)
+- `ilife_claim.py` — iLIFE IRIS Vendor Claim Form field mapping (no UI deps)
 - `template.pdf` — IRIS Provider Invoice fillable PDF (pre-filled with provider info)
+- `ilife_template.pdf` — iLIFE IRIS Vendor Claim Form, unmodified from ilife.org
+  (provider info is filled at generation time)
