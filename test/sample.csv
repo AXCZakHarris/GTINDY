@@ -1,0 +1,17 @@
+Client,Caregiver,Visit Date,Procedure Code,Modifiers,Billable Hours,Billable Rate,Billable Amount
+"Sample, Alice",Test Caregiver,03/03/26,S5125,,2.5,$36.00,$90.00
+"Sample, Alice",Test Caregiver,3/3/26,S5125,U1,1.25,$36.00,$45.00
+"Sample, Alice",Test Caregiver,03/10/26,S5125,,4,$36.00,$144.00
+"Sample, Alice",Test Caregiver,04/01/26,S5125,,3.75,$36.00,$135.00
+"Sample, Alice",Test Caregiver,03/11/26,S5125,,0,$36.00,$0.00
+"Testperson, Bob",Test Caregiver,05/01/26,T1019,U2,1,$36.50,$36.50
+"Testperson, Bob",Test Caregiver,05/02/26,T1019,U2,1,$36.50,$36.50
+"Testperson, Bob",Test Caregiver,05/03/26,T1019,U2,1,$36.50,$36.50
+"Testperson, Bob",Test Caregiver,05/04/26,T1019,U2,1,$36.50,$36.50
+"Testperson, Bob",Test Caregiver,05/05/26,T1019,U2,1,$36.50,$36.50
+"Testperson, Bob",Test Caregiver,05/06/26,T1019,U2,1,$36.50,$36.50
+"Testperson, Bob",Test Caregiver,05/07/26,T1019,U2,1,$36.50,$36.50
+"Testperson, Bob",Test Caregiver,05/08/26,T1019,U2,1,$36.50,$36.50
+"Testperson, Bob",Test Caregiver,05/09/26,T1019,U2,1,$36.50,$36.50
+"Testperson, Bob",Test Caregiver,05/10/26,T1019,U2,0.625,$36.50,$22.81
+"Keuler, Mary",Test Caregiver,06/02/26,S5125,,2.5,$36.00,$90.00
