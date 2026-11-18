@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>AxisCare → IRIS Provider Invoice</title>
+<style>
+  :root {
+    --bg: #f5f7fa; --card: #ffffff; --text: #1c2733; --muted: #5b6b7c;
+    --line: #d7dee6; --accent: #0b6bcb; --accent-text: #ffffff;
+    --warn-bg: #fff6dd; --warn-line: #e6c65c; --warn-text: #5c4500;
+    --err-bg: #fdeaea; --err-line: #e2a0a0; --err-text: #7a1717;
+    --ok-bg: #e7f6ec; --ok-line: #9fd3b0; --ok-text: #14532d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12171d; --card: #1b222b; --text: #e6ebf1; --muted: #9aa8b7;
+      --line: #313c49; --accent: #4a9ff0; --accent-text: #0b1118;
+      --warn-bg: #3a3112; --warn-line: #7a6620; --warn-text: #f3dfa0;
+      --err-bg: #3b1a1a; --err-line: #7d3a3a; --err-text: #f5c2c2;
+      --ok-bg: #16321f; --ok-line: #2f6b43; --ok-text: #bfe8cb;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  }
+  main { max-width: 720px; margin: 0 auto; padding: 32px 16px 48px; }
+  h1 { font-size: 1.6rem; margin: 0 0 8px; }
+  p { margin: 0 0 16px; }
+  .muted { color: var(--muted); }
+  .box { border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; margin: 0 0 16px; background: var(--card); }
+  .warn { background: var(--warn-bg); border-color: var(--warn-line); color: var(--warn-text); }
+  .error { background: var(--err-bg); border-color: var(--err-line); color: var(--err-text); }
+  .ok { background: var(--ok-bg); border-color: var(--ok-line); color: var(--ok-text); }
+  details summary { cursor: pointer; font-weight: 600; }
+  details ul { margin: 8px 0 0; padding-left: 20px; }
+  #drop {
+    display: block; text-align: center; padding: 28px 16px; cursor: pointer;
+    border: 2px dashed var(--line); border-radius: 8px; background: var(--card); margin: 0 0 16px;
+  }
+  #drop.over { border-color: var(--accent); }
+  #drop strong { display: block; margin-bottom: 4px; }
+  #file { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  #drop:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .btn {
+    display: inline-block; padding: 10px 18px; border-radius: 6px; border: 0; cursor: pointer;
+    background: var(--accent); color: var(--accent-text); font: inherit; font-weight: 600; text-decoration: none;
+  }
+  #files { margin: 8px 0 0; padding: 0; list-style: none; font-family: ui-monospace, Consolas, monospace; font-size: 0.9rem; overflow-wrap: anywhere; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>AxisCare → IRIS Provider Invoice</h1>
+  <p>Upload an AxisCare <strong>ClaimBatchCreation</strong> CSV. You'll get back one IRIS
+     Provider Invoice PDF per participant per service month.</p>
+
+  <details class="box">
+    <summary>Rules</summary>
+    <ul>
+      <li>One invoice per participant per calendar month.</li>
+      <li>Same-day visits for a participant are merged into a single line.</li>
+      <li>Up to 9 service dates per page; longer months overflow into <code>_pt2</code>, <code>_pt3</code>, …</li>
+      <li>Units are reported in 15-minute increments at the equivalent unit rate.</li>
+    </ul>
+  </details>
+
+  <div class="box warn">
+    This tool handles Protected Health Information (PHI). Your file is processed entirely
+    inside this browser tab — it is never uploaded, saved, or sent to anyone. Do not share
+    generated PDFs outside of authorized billing workflows.
+  </div>
+
+  <label id="drop">
+    <input type="file" id="file" accept=".csv,text/csv">
+    <strong>Choose an AxisCare CSV</strong>
+    <span class="muted">or drag and drop it here. Max 5 MB.</span>
+  </label>
+
+  <div id="status" class="box" role="status" aria-live="polite" hidden></div>
+
+  <div id="result" hidden>
+    <p><a id="download" class="btn" href="#"></a>
+       <button id="reset" type="button" class="btn" style="background:transparent;color:var(--accent);border:1px solid var(--line)">Clear</button></p>
+    <details class="box" id="listbox">
+      <summary>Files in this ZIP</summary>
+      <ul id="files"></ul>
+    </details>
+  </div>
+</main>
+
+<script src="vendor/pdf-lib.min.js"></script>
+<script src="converter.js"></script>
+<script>
+(function () {
+  "use strict";
+  var MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+  var drop = document.getElementById("drop");
+  var input = document.getElementById("file");
+  var statusBox = document.getElementById("status");
+  var result = document.getElementById("result");
+  var download = document.getElementById("download");
+  var listbox = document.getElementById("listbox");
+  var filesList = document.getElementById("files");
+  var currentUrl = null;
+  var templatePromise = null;
+
+  function show(kind, text) {
+    statusBox.className = "box " + kind;
+    statusBox.textContent = text;
+    statusBox.hidden = false;
+  }
+
+  function clearResult() {
+    if (currentUrl) URL.revokeObjectURL(currentUrl);
+    currentUrl = null;
+    download.removeAttribute("href");
+    filesList.textContent = "";
+    result.hidden = true;
+  }
+
+  function loadTemplate() {
+    if (!templatePromise) {
+      templatePromise = fetch("template.pdf").then(function (res) {
+        if (!res.ok) throw new Error("template");
+        return res.arrayBuffer();
+      });
+      templatePromise.catch(function () { templatePromise = null; });
+    }
+    return templatePromise;
+  }
+
+  function randomToken() {
+    var bytes = new Uint8Array(4);
+    crypto.getRandomValues(bytes);
+    return Array.prototype.map.call(bytes, function (b) {
+      return (b < 16 ? "0" : "") + b.toString(16);
+    }).join("");
+  }
+
+  async function handle(file) {
+    clearResult();
+    if (!file) return;
+    if (!/\.csv$/i.test(file.name)) { show("error", "Please choose a .csv file."); return; }
+    if (file.size > MAX_UPLOAD_BYTES) { show("error", "File is too large (max 5 MB)."); return; }
+
+    show("", "Working…");
+    var invoices;
+    try {
+      var template = await loadTemplate();
+      var text = IrisConverter.decodeCsvBytes(new Uint8Array(await file.arrayBuffer()));
+      invoices = await IrisConverter.generateInvoices(PDFLib, text, template);
+    } catch (e) {
+      // Never echo file contents back in an error.
+      show("error", "Could not process CSV. Check the file format and try again.");
+      return;
+    }
+    if (!invoices.length) { show("error", "No billable rows found in the CSV."); return; }
+
+    // Generic download names: the uploaded file name is never reused.
+    var token = randomToken();
+    var blob, name, label;
+    if (invoices.length === 1) {
+      blob = new Blob([invoices[0].pdfBytes], { type: "application/pdf" });
+      name = "iris_invoice_" + token + ".pdf";
+      label = "Download PDF";
+      show("ok", "Generated 1 invoice.");
+      listbox.hidden = true;
+    } else {
+      var zip = IrisConverter.makeZip(invoices.map(function (inv) {
+        return { name: inv.filename, bytes: inv.pdfBytes };
+      }));
+      blob = new Blob([zip], { type: "application/zip" });
+      name = "iris_invoices_" + token + ".zip";
+      label = "Download ZIP";
+      show("ok", "Generated " + invoices.length + " invoices.");
+      invoices.forEach(function (inv) {
+        var li = document.createElement("li");
+        li.textContent = inv.filename;
+        filesList.appendChild(li);
+      });
+      listbox.hidden = false;
+    }
+    currentUrl = URL.createObjectURL(blob);
+    download.href = currentUrl;
+    download.download = name;
+    download.textContent = label;
+    result.hidden = false;
+  }
+
+  input.addEventListener("change", function () {
+    var file = input.files[0];
+    input.value = ""; // allow choosing the same file again
+    handle(file);
+  });
+  ["dragenter", "dragover"].forEach(function (type) {
+    drop.addEventListener(type, function (e) { e.preventDefault(); drop.classList.add("over"); });
+  });
+  ["dragleave", "drop"].forEach(function (type) {
+    drop.addEventListener(type, function (e) { e.preventDefault(); drop.classList.remove("over"); });
+  });
+  drop.addEventListener("drop", function (e) {
+    handle(e.dataTransfer && e.dataTransfer.files[0]);
+  });
+  document.getElementById("reset").addEventListener("click", function () {
+    clearResult();
+    statusBox.hidden = true;
+  });
+})();
+</script>
+</body>
+</html>

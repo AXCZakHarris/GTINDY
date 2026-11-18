@@ -1,7 +1,10 @@
 # AxisCare → IRIS Provider Invoice Converter
 
-Streamlit app. Upload an AxisCare `ClaimBatchCreation` CSV; download a ZIP of
-filled IRIS Provider Invoice PDFs.
+A small web page. Choose an AxisCare `ClaimBatchCreation` CSV; get back filled
+GT Independence **IRIS Provider Invoice** PDFs (one PDF, or a ZIP of several).
+
+It runs on Cloudflare Pages. The CSV is read and the PDFs are built **inside the
+browser tab** — the file is never uploaded, stored, or sent anywhere.
 
 ## Behavior
 
@@ -13,120 +16,75 @@ filled IRIS Provider Invoice PDFs.
   `..._pt1.pdf`, `..._pt2.pdf`, …; each part is one printable page.
 - `Unit Type` is reported as `15 min`. Units are computed as
   `billable_hours × 4`, and `Unit Rate` is `csv_rate / 4` (e.g. $36/hr → $9.00).
+- Rows with no client, or with zero/blank billable hours, are skipped.
+- `Visit Date` must be `MM/DD/YY` (two-digit year), as AxisCare exports it.
+- Download names are generic (`iris_invoice_xxxxxxxx.pdf` /
+  `iris_invoices_xxxxxxxx.zip`); the uploaded file's name is never reused.
+
+CSV columns used: `Client`, `Visit Date`, `Procedure Code`, `Modifiers`,
+`Billable Hours`, `Billable Rate`, `Billable Amount`. Other columns are ignored.
 
 ### Per-client billing overrides
 
 Some clients must be billed differently than the source CSV reports, **without
-editing the CSV**. `CLIENT_OVERRIDES` in `invoice_generator.py` maps a client
-name (matched case-insensitively against the CSV `Client` column, with
-`Last, First` reordered so `Keuler, Mary` and `Mary Keuler` both match) to a
-billing override. When a client matches, the invoice uses the override's unit type and
-fixed hourly rate instead of the global 15-min default, and the line **amount is
-recomputed** as `billable_hours × hourly_rate` so `rate × units` reconciles.
+editing the CSV**. `CLIENT_OVERRIDES` near the top of `public/converter.js` maps
+a client name (matched case-insensitively against the CSV `Client` column, with
+`Last, First` reordered so both name orders match) to a billing override. When a
+client matches, the invoice uses the override's unit type and fixed hourly rate
+instead of the 15-min default, and the line **amount is recomputed** as
+`billable_hours × hourly_rate` so `rate × units` reconciles.
 
-Current overrides:
+> **Anything in `CLIENT_OVERRIDES` is part of the web page**, so anyone who can
+> open the site can read it. Do not put a real participant's name there unless
+> the site is behind the password below or Cloudflare Access.
 
-- **Mary Keuler** — billed in `1 hr` units at **$35.00/hr** (units = hours,
-  unit rate = $35.00, amount = hours × $35).
+## Deploying on Cloudflare Pages
 
-## Run locally
+Connect this repository in the Cloudflare dashboard (Workers & Pages → Create →
+Pages → Connect to Git) with:
 
-    pip install -r requirements.txt
-    streamlit run app.py
-    # http://localhost:8501
+| Setting | Value |
+| --- | --- |
+| Framework preset | None |
+| Build command | *(leave empty)* |
+| Build output directory | `public` |
+| Root directory | *(leave empty)* |
 
-To require a password, set `APP_PASSWORD`:
+No bindings, databases, or other services are needed.
 
-    APP_PASSWORD='strong-secret' streamlit run app.py
+### Optional password
 
-You can also put it in `.streamlit/secrets.toml`:
+If the Pages project has a secret named `APP_PASSWORD` (Settings → Variables
+and Secrets), the browser asks for a password before showing the page. The user
+name box can be left blank; only the password is checked. With no `APP_PASSWORD`
+the site is open to anyone with the link. Redeploy after adding or changing it.
 
-    APP_PASSWORD = "strong-secret"
+## Privacy notes
 
-## HIPAA compliance
+This tool handles PHI (participant names, dates of service).
 
-This app processes PHI (participant names, member IDs, auth numbers, dates of
-service). The code is structured to support a HIPAA-compliant deployment;
-**compliance also requires operational controls that are not enforceable from
-the code alone**.
+- Processing is in the browser only. Nothing from the CSV reaches Cloudflare or
+  any other server, and nothing is written to disk except the file you download.
+- The page loads no outside scripts, fonts, or analytics, and its security
+  headers (`public/_headers`) block it from contacting other sites.
+- Errors never repeat CSV contents back.
+- This does not by itself settle whether the hosting meets your organisation's
+  policy — check with IT/compliance before using it with real files.
 
-### ⚠️ Streamlit Community Cloud is NOT HIPAA-eligible
+## Run / test locally
 
-As of this writing, **Streamlit Community Cloud (`*.streamlit.app`) does not
-sign Business Associate Agreements**. Do not host this app there with real
-PHI. Acceptable hosting options:
-
-- **Self-hosted Streamlit** on a VM (AWS EC2, Azure VM, GCP Compute Engine,
-  on-prem) under a BAA with the cloud provider, behind your own TLS-terminating
-  reverse proxy and SSO/VPN.
-- **Snowflake Streamlit** if your Snowflake account is on a HIPAA-eligible
-  edition and a BAA is in place.
-- **Containerized deployment** (Cloud Run, App Service, ECS, GKE) where the
-  underlying service is BAA-eligible and configured per the provider's HIPAA
-  guidance.
-
-### Code-level controls (in this repo)
-
-- All processing is **in-memory only**. The uploaded CSV and generated PDFs are
-  never written to disk by the app. There are no temp files.
-- **No third-party requests** — no analytics, no external CDNs, no fonts loaded
-  from the internet.
-- **Optional password gate** via `APP_PASSWORD` env var (or Streamlit secret).
-- **Generic download filenames** — the uploaded filename (which can itself be
-  PHI) is never reflected back in the response.
-- **Errors never echo CSV contents back.**
-
-### Operational controls (your responsibility to configure)
-
-These must be true in production to claim HIPAA compliance:
-
-1. **Sign a BAA** with your hosting provider and any other vendor that touches
-   the traffic (load balancer, WAF, log aggregator, backup service).
-2. **TLS everywhere.** Terminate HTTPS in front of Streamlit (reverse proxy,
-   load balancer). Streamlit itself does not terminate TLS.
-3. **Authentication.** Set a strong `APP_PASSWORD`, or front the app with SSO
-   / your existing identity provider. Do not run open to the internet.
-4. **Restrict access** to the host (security groups, VPN, IP allow-list) and
-   the file system (least-privilege OS user).
-5. **Disable usage telemetry.** Set `browser.gatherUsageStats = false` and
-   `global.disableWatchdogWarning = true` in `.streamlit/config.toml` to keep
-   the app from phoning home.
-6. **Disable infrastructure logging of request bodies / file uploads.**
-7. **Encrypt at rest.** The app does not write PHI to disk, but the host's
-   disk should still be encrypted.
-8. **Audit logging** at the reverse proxy / auth layer (login events, retain
-   per policy). Streamlit itself does not emit auth-event logs.
-9. **Patch management.** Keep `streamlit`, `pypdf`, and the OS base image
-   current.
-10. **Workforce training & policies** — sanctions for misuse, breach
-    notification process, designated Privacy/Security Officer.
-
-### Recommended `.streamlit/config.toml` for PHI hosting
-
-    [server]
-    headless = true
-    enableCORS = false
-    enableXsrfProtection = true
-
-    [browser]
-    gatherUsageStats = false
-
-    [global]
-    disableWatchdogWarning = true
-
-### What this app does NOT do
-
-- It does not authenticate individual users (only a single shared password).
-  For multi-user environments, front it with SSO.
-- It does not write an audit trail of which user processed which CSV.
-- It does not validate that the uploader is authorized for the participants
-  listed in the CSV.
-
-If you need any of the above, treat this app as a building block, not a
-turnkey HIPAA solution.
+    npx wrangler pages dev public     # then open the address it prints
+    node test/check.js                # self-check using made-up data
 
 ## Files
 
-- `app.py` — Streamlit UI
-- `invoice_generator.py` — CSV parsing, grouping, PDF fill (no UI deps)
-- `template.pdf` — IRIS Provider Invoice fillable PDF (pre-filled with provider info)
+- `public/index.html` — the page
+- `public/converter.js` — CSV parsing, grouping, PDF fill, ZIP
+- `public/template.pdf` — IRIS Provider Invoice fillable PDF (pre-filled with provider info)
+- `public/vendor/pdf-lib.min.js` — [pdf-lib](https://pdf-lib.js.org/) 1.17.1 (MIT), bundled so nothing loads from the internet
+- `public/_headers` — security headers
+- `functions/_middleware.js` — the optional password gate
+- `test/` — made-up sample CSV and a self-check
+
+The original Python/Streamlit version is in the git history (last at commit
+`6a3c151`); this version was checked to produce the same field values.
