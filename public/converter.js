@@ -372,9 +372,259 @@
     return plans;
   }
 
+  // ---- iLIFE IRIS Vendor Claim Form ----------------------------------------
+  //
+  // Same grouping as the IRIS Provider Invoice (one claim per participant per
+  // calendar month, same-day visits merged), but the iLIFE grid holds 14
+  // service lines per page. Fields the AxisCare CSV cannot supply (Vendor ID,
+  // ForwardHealth Medicaid ID, invoice number, participant DOB when the export
+  // omits it) come from the options or are left blank for hand-completion.
+  // Signature lines are always left blank: the form is signed on paper.
+  // The per-client billing overrides above do NOT apply to this form.
+
+  var LINES_PER_CLAIM = 14;
+  var UNIT_BASIS_15MIN = "15 min";
+  var UNIT_BASIS_HOUR = "HR";
+
+  // The DOB boxes and the Modifiers column are ~20pt wide; at the template's
+  // default font a 4-digit year or a two-modifier string is clipped.
+  var NARROW_FIELD_PT = 7.5;
+
+  // Billing provider block ("To be completed by provider"). These are the same
+  // provider details already baked into template.pdf; every value can be
+  // changed on the page before generating.
+  var DEFAULT_PROVIDER = {
+    name: "Synergy HomeCare of Madison",
+    addressStreet: "6320 Monona Dr. Ste 215",
+    addressCityStateZip: "Madison, WI 53716",
+    contactPerson: "Russell Bercier",
+    phone: "608-400-2941",
+    providerId: "99-3982407", // *Provider ID: SSN or EIN
+    vendorId: "", // **Vendor ID: iLIFE assigns this; fill in before submitting
+    medicaidId: "", // ***Medicaid ID: ForwardHealth provider number, if enrolled
+  };
+
+  var MEDICAID_ID_COLUMNS = [
+    "Medicaid ID", "Medicaid Id", "Medicaid Number", "Client Medicaid ID",
+    "Member ID", "Member Id", "Insurance ID", "Policy Number", "Policy #",
+  ];
+  var DOB_COLUMNS = ["DOB", "Date of Birth", "Client DOB", "Birth Date", "Birthdate"];
+
+  function firstColumn(row, names) {
+    for (var i = 0; i < names.length; i++) {
+      var value = row[names[i]];
+      if (value && value.trim()) return value.trim();
+    }
+    return "";
+  }
+
+  function validDate(year, month, day) {
+    var probe = new Date(Date.UTC(2000, month - 1, day));
+    probe.setUTCFullYear(year);
+    if (
+      year < 1 || month < 1 || day < 1 ||
+      probe.getUTCFullYear() !== year ||
+      probe.getUTCMonth() !== month - 1 ||
+      probe.getUTCDate() !== day
+    ) {
+      return null;
+    }
+    return { year: year, month: month, day: day };
+  }
+
+  // DOB may be written MM/DD/YYYY, MM/DD/YY, YYYY-MM-DD or MM-DD-YYYY.
+  // Anything else is treated as "not provided".
+  function parseOptionalDate(text) {
+    var t = text.trim();
+    var m;
+    if ((m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(t))) return validDate(+m[3], +m[1], +m[2]);
+    if ((m = /^(\d{1,2})\/(\d{1,2})\/(\d{2})$/.exec(t))) {
+      return validDate(+m[3] <= 68 ? 2000 + +m[3] : 1900 + +m[3], +m[1], +m[2]);
+    }
+    if ((m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(t))) return validDate(+m[1], +m[2], +m[3]);
+    if ((m = /^(\d{1,2})-(\d{1,2})-(\d{4})$/.exec(t))) return validDate(+m[3], +m[1], +m[2]);
+    return null;
+  }
+
+  // Participant Medicaid ID / DOB, when the CSV happens to carry such columns.
+  function parseClientDetails(csvText) {
+    var details = new Map();
+    parseCsvDicts(csvText).forEach(function (row) {
+      var client = (row["Client"] || "").trim();
+      if (!client) return;
+      if (!details.has(client)) details.set(client, { medicaidId: "", dob: null });
+      var current = details.get(client);
+      if (!current.medicaidId) current.medicaidId = firstColumn(row, MEDICAID_ID_COLUMNS);
+      if (current.dob === null) {
+        var rawDob = firstColumn(row, DOB_COLUMNS);
+        if (rawDob) current.dob = parseOptionalDate(rawDob);
+      }
+    });
+    return details;
+  }
+
+  // "Last, First M" or "First M Last" -> [first, middle, last]
+  function splitParticipantName(name) {
+    name = name.split(/\s+/).filter(Boolean).join(" ");
+    if (!name) return ["", "", ""];
+    var comma = name.indexOf(",");
+    if (comma !== -1) {
+      var rest = name.slice(comma + 1).split(" ").filter(Boolean);
+      return [rest[0] || "", rest.slice(1).join(" "), name.slice(0, comma).trim()];
+    }
+    var parts = name.split(" ");
+    if (parts.length === 1) return ["", "", parts[0]];
+    return [parts[0], parts.slice(1, -1).join(" "), parts[parts.length - 1]];
+  }
+
+  function pad4(n) {
+    var s = String(n);
+    while (s.length < 4) s = "0" + s;
+    return s;
+  }
+
+  function fmtDashDate(d) {
+    return pad2(d.month) + "-" + pad2(d.day) + "-" + pad4(d.year);
+  }
+
+  function splitDate(d) {
+    return d ? [pad2(d.month), pad2(d.day), pad4(d.year)] : ["", "", ""];
+  }
+
+  // Field names for service-grid row `index` (1-based). The template names
+  // row 1 without a suffix and rows 2-14 with _2 ... _14; the Modifiers column
+  // is a separate, unlabeled Text-19 ... Text-32 series.
+  function claimRowFields(index) {
+    var suffix = index === 1 ? "" : "_" + index;
+    return {
+      code: "Service CodeRow" + index,
+      modifier: "Text-" + (18 + index),
+      fromDate: "Service From Date MMDDYYYY" + suffix,
+      toDate: "Service To Date MMDDYYYY" + suffix,
+      description: "Description" + suffix,
+      unitType: "Unit Type each mile HR" + suffix,
+      rate: "Rate" + suffix,
+      units: "Units" + suffix,
+      amount: "Billed Amount" + suffix,
+    };
+  }
+
+  function narrowFieldFontSizes() {
+    var sizes = { Text15: NARROW_FIELD_PT, Text17: NARROW_FIELD_PT, Text18: NARROW_FIELD_PT };
+    for (var i = 1; i <= LINES_PER_CLAIM; i++) sizes[claimRowFields(i).modifier] = NARROW_FIELD_PT;
+    return sizes;
+  }
+
+  function claimOptions(options) {
+    options = options || {};
+    var provider = {};
+    Object.keys(DEFAULT_PROVIDER).forEach(function (key) {
+      var given = options.provider && options.provider[key];
+      provider[key] = given === undefined || given === null ? DEFAULT_PROVIDER[key] : given;
+    });
+    return {
+      serviceDescription:
+        options.serviceDescription === undefined ? "Supportive Home Care" : options.serviceDescription,
+      unitBasis: options.unitBasis || UNIT_BASIS_15MIN,
+      invoiceNumber: options.invoiceNumber || "",
+      invoiceDate: options.invoiceDate || null, // {year, month, day}
+      provider: provider,
+    };
+  }
+
+  function buildClaimFieldValues(lines, participant, options, medicaidId, dob) {
+    var provider = options.provider;
+    var name = splitParticipantName(participant);
+    var dobParts = splitDate(dob);
+    var start = splitDate(lines[0].date); // lines are in date order
+    var end = splitDate(lines[lines.length - 1].date);
+
+    var values = {
+      "Invoice Number": options.invoiceNumber,
+      "Invoice Date": options.invoiceDate ? fmtDashDate(options.invoiceDate) : "",
+      // Participant block
+      PPT_Medicaid_ID: medicaidId || "",
+      Text15: dobParts[0],
+      Text17: dobParts[1],
+      Text18: dobParts[2],
+      PPT_First_Name: name[0],
+      Middle: name[1],
+      PPT_Last_Name: name[2],
+      // Billing dates (three boxes each: MM / DD / YYYY)
+      "Billing Start Date": start[0],
+      undefined: start[1],
+      undefined_2: start[2],
+      "Billing End Date": end[0],
+      undefined_3: end[1],
+      undefined_4: end[2],
+      // Provider block
+      "Provider Name 1": provider.name,
+      "Provider Name 2": "",
+      "Provider Address Street 1": provider.addressStreet,
+      "Provider Address Street 2": "",
+      "Provider Address City State ZIP 1": provider.addressCityStateZip,
+      "Provider Address City State ZIP 2": "",
+      "Provider Contact Person": provider.contactPerson,
+      Phone: provider.phone,
+      "Provider ID": provider.providerId,
+      "Vendor ID": provider.vendorId,
+      "Medicaid ID": provider.medicaidId,
+    };
+
+    var hourly = options.unitBasis === UNIT_BASIS_HOUR;
+    var totalAmount = 0;
+    lines.forEach(function (line, idx) {
+      var names = claimRowFields(idx + 1);
+      values[names.code] = line.procedureCode;
+      values[names.modifier] = line.modifier;
+      // One row per service date, so From and To are the same day.
+      values[names.fromDate] = fmtDashDate(line.date);
+      values[names.toDate] = fmtDashDate(line.date);
+      values[names.description] = options.serviceDescription;
+      values[names.unitType] = options.unitBasis;
+      values[names.rate] = fmtMoney(hourly ? line.csvHourlyRate : line.csvHourlyRate / UNITS_PER_HOUR);
+      values[names.units] = fmtUnits(hourly ? line.hours : lineUnits(line));
+      values[names.amount] = fmtMoney(line.amount);
+      totalAmount += line.amount;
+    });
+    values["Billed AmountTotal"] = fmtMoney(totalAmount);
+    return values;
+  }
+
+  function planClaims(csvText, rawOptions) {
+    var options = claimOptions(rawOptions);
+    var details = parseClientDetails(csvText);
+    var plans = [];
+    parseCsv(csvText).forEach(function (group) {
+      var detail = details.get(group.client);
+      var chunks = [];
+      for (var i = 0; i < group.lines.length; i += LINES_PER_CLAIM) {
+        chunks.push(group.lines.slice(i, i + LINES_PER_CLAIM));
+      }
+      chunks.forEach(function (chunk, idx) {
+        var base = "ilife_" + safeFilename(group.client) + "_" + pad4(group.year) + "-" + pad2(group.month);
+        var suffix = chunks.length > 1 ? "_pt" + (idx + 1) : "";
+        plans.push({
+          filename: base + suffix + ".pdf",
+          participant: group.client,
+          year: group.year,
+          month: group.month,
+          pageIndex: idx + 1,
+          pageCount: chunks.length,
+          fieldValues: buildClaimFieldValues(
+            chunk, group.client, options, detail ? detail.medicaidId : "", detail ? detail.dob : null
+          ),
+        });
+      });
+    });
+    return plans;
+  }
+
   // ---- PDF -----------------------------------------------------------------
 
-  async function fillPdf(PDFLib, templateBytes, fieldValues) {
+  // fontSizes (optional): {fieldName: pointSize} for boxes too narrow for the
+  // template's own text size.
+  async function fillPdf(PDFLib, templateBytes, fieldValues, fontSizes) {
     var doc = await PDFLib.PDFDocument.load(templateBytes);
     var form = doc.getForm();
     var font = doc.embedStandardFont(PDFLib.StandardFonts.Helvetica);
@@ -392,9 +642,18 @@
     normalizeStyle(form.acroForm.dict);
     form.getFields().forEach(function (f) {
       normalizeStyle(f.acroField.dict);
-      f.acroField.getWidgets().forEach(function (w) {
+      var widgets = f.acroField.getWidgets();
+      widgets.forEach(function (w) {
         normalizeStyle(w.dict);
       });
+      var name = f.getName();
+      if (fontSizes && Object.prototype.hasOwnProperty.call(fontSizes, name)) {
+        var style = PDFLib.PDFString.of("/Helv " + fontSizes[name] + " Tf 0 g");
+        f.acroField.dict.set(DA, style);
+        widgets.forEach(function (w) {
+          if (w.dict.has(DA)) w.dict.set(DA, style);
+        });
+      }
     });
 
     var drawable = true;
@@ -433,6 +692,15 @@
       out.push(plan);
     }
     return out;
+  }
+
+  async function generateClaims(PDFLib, csvText, templateBytes, options) {
+    var plans = planClaims(csvText, options);
+    var sizes = narrowFieldFontSizes();
+    for (var i = 0; i < plans.length; i++) {
+      plans[i].pdfBytes = await fillPdf(PDFLib, templateBytes, plans[i].fieldValues, sizes);
+    }
+    return plans;
   }
 
   // ---- ZIP (no compression; the PDFs are already compressed) ---------------
@@ -550,6 +818,13 @@
     planInvoices: planInvoices,
     fillPdf: fillPdf,
     generateInvoices: generateInvoices,
+    LINES_PER_CLAIM: LINES_PER_CLAIM,
+    UNIT_BASIS_15MIN: UNIT_BASIS_15MIN,
+    UNIT_BASIS_HOUR: UNIT_BASIS_HOUR,
+    DEFAULT_PROVIDER: DEFAULT_PROVIDER,
+    splitParticipantName: splitParticipantName,
+    planClaims: planClaims,
+    generateClaims: generateClaims,
     makeZip: makeZip,
     decodeCsvBytes: decodeCsvBytes,
     fmtMoney: fmtMoney,

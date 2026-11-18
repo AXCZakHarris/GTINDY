@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<title>AxisCare → IRIS Provider Invoice</title>
+<title>AxisCare → IRIS billing forms</title>
 <style>
   :root {
     --bg: #f5f7fa; --card: #ffffff; --text: #1c2733; --muted: #5b6b7c;
@@ -50,22 +50,72 @@
     background: var(--accent); color: var(--accent-text); font: inherit; font-weight: 600; text-decoration: none;
   }
   #files { margin: 8px 0 0; padding: 0; list-style: none; font-family: ui-monospace, Consolas, monospace; font-size: 0.9rem; overflow-wrap: anywhere; }
+  fieldset.choice { border: 0; padding: 0; margin: 0 0 16px; min-width: 0; }
+  fieldset.choice legend { font-weight: 600; padding: 0; margin-bottom: 4px; }
+  fieldset.choice label { display: inline-block; margin-right: 16px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; margin: 12px 0; }
+  @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+  .grid label { display: block; font-size: 0.9rem; color: var(--muted); }
+  .grid fieldset.choice label, .grid label.inline { display: inline-block; font-size: 1rem; color: var(--text); margin-bottom: 8px; }
+  .grid input[type=text], .grid input[type=date] {
+    display: block; width: 100%; margin-top: 4px; padding: 8px 10px; font: inherit;
+    color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+  }
+  .small { font-size: 0.85rem; margin: 4px 0 0; }
   [hidden] { display: none !important; }
 </style>
 </head>
 <body>
 <main>
-  <h1>AxisCare → IRIS Provider Invoice</h1>
-  <p>Upload an AxisCare <strong>ClaimBatchCreation</strong> CSV. You'll get back one IRIS
-     Provider Invoice PDF per participant per service month.</p>
+  <h1>AxisCare → IRIS billing forms</h1>
+  <p>Upload an AxisCare <strong>ClaimBatchCreation</strong> CSV. You'll get back one filled
+     PDF per participant per service month, on the form you pick below.</p>
+
+  <fieldset class="choice" id="formChoice">
+    <legend>Form</legend>
+    <label><input type="radio" name="form" value="iris" checked> IRIS Provider Invoice</label>
+    <label><input type="radio" name="form" value="ilife"> iLIFE IRIS Vendor Claim Form</label>
+    <label><input type="radio" name="form" value="both"> Both</label>
+  </fieldset>
+
+  <details class="box" id="ilifeOptions" open hidden>
+    <summary>iLIFE claim details</summary>
+    <div class="grid">
+      <label>Provider name <input type="text" id="pName"></label>
+      <label>Phone <input type="text" id="pPhone"></label>
+      <label>Provider ID (SSN or EIN) <input type="text" id="pProviderId"></label>
+      <label>Address (street) <input type="text" id="pStreet"></label>
+      <label>Vendor ID <input type="text" id="pVendorId" placeholder="iLIFE-assigned ID number"></label>
+      <label>Address (city, state, ZIP) <input type="text" id="pCity"></label>
+      <label>Medicaid ID <input type="text" id="pMedicaidId" placeholder="ForwardHealth-assigned provider number"></label>
+      <label>Invoice number <input type="text" id="invoiceNumber"></label>
+      <label>Provider contact person <input type="text" id="pContact"></label>
+      <label>Service description <input type="text" id="description" value="Supportive Home Care"></label>
+    </div>
+    <p class="muted small">Include at least one of Provider ID / Vendor ID / Medicaid ID.</p>
+    <div class="grid">
+      <fieldset class="choice">
+        <legend>Unit basis</legend>
+        <label><input type="radio" name="basis" value="15 min" checked> 15 min</label>
+        <label><input type="radio" name="basis" value="HR"> HR</label>
+        <p class="muted small">15 min matches the IRIS Provider Invoice (rate ÷ 4). HR bills hours at the CSV hourly rate.</p>
+      </fieldset>
+      <div>
+        <label class="inline"><input type="checkbox" id="useInvoiceDate" checked> Set invoice date</label>
+        <label>Invoice date <input type="date" id="invoiceDate"></label>
+      </div>
+    </div>
+  </details>
 
   <details class="box">
     <summary>Rules</summary>
     <ul>
-      <li>One invoice per participant per calendar month.</li>
+      <li>One form per participant per calendar month.</li>
       <li>Same-day visits for a participant are merged into a single line.</li>
-      <li>Up to 9 service dates per page; longer months overflow into <code>_pt2</code>, <code>_pt3</code>, …</li>
-      <li>Units are reported in 15-minute increments at the equivalent unit rate.</li>
+      <li>Service dates per page: <strong>9</strong> on the IRIS Provider Invoice, <strong>14</strong> on the
+          iLIFE Vendor Claim Form. Longer months overflow into <code>_pt2</code>, <code>_pt3</code>, …</li>
+      <li>Units default to 15-minute increments at the equivalent unit rate.</li>
+      <li>On the iLIFE form, signature lines and any ID the CSV doesn't carry are left blank for hand-completion.</li>
     </ul>
   </details>
 
@@ -106,8 +156,54 @@
   var download = document.getElementById("download");
   var listbox = document.getElementById("listbox");
   var filesList = document.getElementById("files");
+  var ilifeBox = document.getElementById("ilifeOptions");
   var currentUrl = null;
-  var templatePromise = null;
+  var currentBytes = null; // the chosen CSV, kept only in this tab's memory
+  var templates = {};
+  var runId = 0;
+
+  function $(id) { return document.getElementById(id); }
+  function checked(name) { return document.querySelector('input[name="' + name + '"]:checked').value; }
+
+  // iLIFE provider details start from the defaults and can be edited per run.
+  var provider = IrisConverter.DEFAULT_PROVIDER;
+  $("pName").value = provider.name;
+  $("pPhone").value = provider.phone;
+  $("pProviderId").value = provider.providerId;
+  $("pStreet").value = provider.addressStreet;
+  $("pVendorId").value = provider.vendorId;
+  $("pCity").value = provider.addressCityStateZip;
+  $("pMedicaidId").value = provider.medicaidId;
+  $("pContact").value = provider.contactPerson;
+  (function () {
+    var now = new Date();
+    var pad = function (n) { return n < 10 ? "0" + n : "" + n; };
+    $("invoiceDate").value = now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate());
+  })();
+
+  function ilifeOptions() {
+    var invoiceDate = null;
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec($("invoiceDate").value);
+    if ($("useInvoiceDate").checked && m) {
+      invoiceDate = { year: Number(m[1]), month: Number(m[2]), day: Number(m[3]) };
+    }
+    return {
+      serviceDescription: $("description").value,
+      unitBasis: checked("basis"),
+      invoiceNumber: $("invoiceNumber").value,
+      invoiceDate: invoiceDate,
+      provider: {
+        name: $("pName").value,
+        addressStreet: $("pStreet").value,
+        addressCityStateZip: $("pCity").value,
+        contactPerson: $("pContact").value,
+        phone: $("pPhone").value,
+        providerId: $("pProviderId").value,
+        vendorId: $("pVendorId").value,
+        medicaidId: $("pMedicaidId").value,
+      },
+    };
+  }
 
   function show(kind, text) {
     statusBox.className = "box " + kind;
@@ -123,15 +219,15 @@
     result.hidden = true;
   }
 
-  function loadTemplate() {
-    if (!templatePromise) {
-      templatePromise = fetch("template.pdf").then(function (res) {
+  function loadTemplate(file) {
+    if (!templates[file]) {
+      templates[file] = fetch(file).then(function (res) {
         if (!res.ok) throw new Error("template");
         return res.arrayBuffer();
       });
-      templatePromise.catch(function () { templatePromise = null; });
+      templates[file].catch(function () { delete templates[file]; });
     }
-    return templatePromise;
+    return templates[file];
   }
 
   function randomToken() {
@@ -143,22 +239,42 @@
   }
 
   async function handle(file) {
+    currentBytes = null;
+    runId++;
     clearResult();
     if (!file) return;
     if (!/\.csv$/i.test(file.name)) { show("error", "Please choose a .csv file."); return; }
     if (file.size > MAX_UPLOAD_BYTES) { show("error", "File is too large (max 5 MB)."); return; }
+    currentBytes = new Uint8Array(await file.arrayBuffer());
+    generate();
+  }
+
+  // Runs when a file is chosen, and again whenever an option changes.
+  async function generate() {
+    var mine = ++runId;
+    clearResult();
+    if (!currentBytes) return;
+    var choice = checked("form");
 
     show("", "Working…");
-    var invoices;
+    var invoices = [];
     try {
-      var template = await loadTemplate();
-      var text = IrisConverter.decodeCsvBytes(new Uint8Array(await file.arrayBuffer()));
-      invoices = await IrisConverter.generateInvoices(PDFLib, text, template);
+      var text = IrisConverter.decodeCsvBytes(currentBytes);
+      if (choice === "iris" || choice === "both") {
+        invoices = invoices.concat(
+          await IrisConverter.generateInvoices(PDFLib, text, await loadTemplate("template.pdf")));
+      }
+      if (choice === "ilife" || choice === "both") {
+        invoices = invoices.concat(
+          await IrisConverter.generateClaims(PDFLib, text, await loadTemplate("ilife_template.pdf"), ilifeOptions()));
+      }
     } catch (e) {
+      if (mine !== runId) return;
       // Never echo file contents back in an error.
       show("error", "Could not process CSV. Check the file format and try again.");
       return;
     }
+    if (mine !== runId) return; // options changed while working; a newer run is on its way
     if (!invoices.length) { show("error", "No billable rows found in the CSV."); return; }
 
     // Generic download names: the uploaded file name is never reused.
@@ -166,18 +282,18 @@
     var blob, name, label;
     if (invoices.length === 1) {
       blob = new Blob([invoices[0].pdfBytes], { type: "application/pdf" });
-      name = "iris_invoice_" + token + ".pdf";
+      name = "iris_form_" + token + ".pdf";
       label = "Download PDF";
-      show("ok", "Generated 1 invoice.");
+      show("ok", "Generated 1 form.");
       listbox.hidden = true;
     } else {
       var zip = IrisConverter.makeZip(invoices.map(function (inv) {
         return { name: inv.filename, bytes: inv.pdfBytes };
       }));
       blob = new Blob([zip], { type: "application/zip" });
-      name = "iris_invoices_" + token + ".zip";
+      name = "iris_forms_" + token + ".zip";
       label = "Download ZIP";
-      show("ok", "Generated " + invoices.length + " invoices.");
+      show("ok", "Generated " + invoices.length + " forms.");
       invoices.forEach(function (inv) {
         var li = document.createElement("li");
         li.textContent = inv.filename;
@@ -191,6 +307,16 @@
     download.textContent = label;
     result.hidden = false;
   }
+
+  var timer = null;
+  function optionsChanged() {
+    ilifeBox.hidden = checked("form") === "iris";
+    clearTimeout(timer);
+    timer = setTimeout(generate, 400);
+  }
+  document.getElementById("formChoice").addEventListener("change", optionsChanged);
+  ilifeBox.addEventListener("input", optionsChanged);
+  ilifeBox.addEventListener("change", optionsChanged);
 
   input.addEventListener("change", function () {
     var file = input.files[0];
@@ -207,6 +333,8 @@
     handle(e.dataTransfer && e.dataTransfer.files[0]);
   });
   document.getElementById("reset").addEventListener("click", function () {
+    currentBytes = null;
+    runId++;
     clearResult();
     statusBox.hidden = true;
   });
