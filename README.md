@@ -116,6 +116,7 @@ This tool handles PHI (participant names, dates of service).
 - `public/template.pdf` — IRIS Provider Invoice fillable PDF (pre-filled with provider info)
 - `public/ilife_template.pdf` — iLIFE IRIS Vendor Claim Form, unmodified from ilife.org
 - `public/vendor/pdf-lib.min.js` — [pdf-lib](https://pdf-lib.js.org/) 1.17.1 (MIT), bundled so nothing loads from the internet
+- `public/fonts/` — Inter and Space Grotesk (SIL Open Font License), bundled so the page matches the RCM Portal without loading fonts from the internet
 - `public/_headers` — security headers
 - `functions/_middleware.js` — the optional password gate
 - `test/` — made-up sample CSV and a self-check
